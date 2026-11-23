@@ -6,3 +6,8 @@ venv/
 .idea/
 .vscode/venv/
 .venv/
+customer_support_tickets.csv
+data/*.csv
+*.csv
+.pytest_cache/
+
