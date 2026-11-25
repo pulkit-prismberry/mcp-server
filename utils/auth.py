@@ -4,7 +4,10 @@ import hmac
 import os
 import time
 from typing import Any, Optional
+import httpx
 import jwt
+
+from config import settings
 
 # ---------------------------------------------------------------------------
 # Section 1: Fixed Test Identities & Deterministic UUIDs (Contract v3.0 Locked)
@@ -308,6 +311,144 @@ def resolve_auth_me(user_context_or_id: Any) -> tuple[int, dict[str, Any]]:
         "permissions": ctx.get("permissions", []),
         "authorized_kb_tiers": ctx.get("authorized_kb_tiers", ["public"]),
     }
+
+
+# ---------------------------------------------------------------------------
+# MCP-2.1: Session Token Verification via /verify-token & Local Lean JWT
+# ---------------------------------------------------------------------------
+
+class AuthVerificationError(Exception):
+    """Raised when a session token fails /verify-token or JWT verification."""
+
+    def __init__(self, message: str, code: str = "UNAUTHORIZED"):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _validate_verified_context(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Ensure verified context has mandatory user_id, org_id, role and is active."""
+    if not isinstance(ctx, dict):
+        raise AuthVerificationError("Verified auth payload must be a JSON object.")
+
+    if ctx.get("is_active") is False:
+        raise AuthVerificationError("Account is disabled.")
+
+    user_id = ctx.get("user_id") or ctx.get("sub") or ctx.get("id")
+    org_id = ctx.get("org_id")
+    role = ctx.get("role")
+
+    if not user_id or not org_id or not role:
+        raise AuthVerificationError(
+            "Verified user context is missing required claims (user_id, org_id, role)."
+        )
+
+    normalized = dict(ctx)
+    normalized["id"] = str(user_id)
+    normalized["user_id"] = str(user_id)
+    normalized["org_id"] = str(org_id)
+    normalized["role"] = str(role)
+    normalized.setdefault("permissions", [])
+    normalized.setdefault("authorized_kb_tiers", ["public"])
+    normalized.setdefault("is_active", True)
+    return normalized
+
+
+def verify_token_via_backend(
+    token: str,
+    verify_url: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> dict[str, Any]:
+    """Verify a session bearer token against the backend `/verify-token` endpoint."""
+    url = (
+        verify_url
+        or settings.AUTH_VERIFY_URL
+        or f"{settings.BACKEND_URL.rstrip('/')}/verify-token"
+    )
+    req_timeout = timeout if timeout is not None else settings.VERIFY_TOKEN_TIMEOUT
+
+    try:
+        response = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"token": token},
+            timeout=req_timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise AuthVerificationError(
+            f"Auth verification service unreachable: {exc}",
+            code="SERVICE_UNAVAILABLE",
+        ) from exc
+
+    if response.status_code in (401, 403):
+        try:
+            err_body = response.json()
+            msg = (
+                err_body.get("error", {}).get("message")
+                or err_body.get("detail")
+                or "Invalid or expired session token."
+            )
+        except Exception:
+            msg = "Invalid or expired session token."
+        raise AuthVerificationError(msg, code="UNAUTHORIZED")
+
+    if response.status_code != 200:
+        raise AuthVerificationError(
+            f"Token verification failed with status {response.status_code}.",
+            code="UNAUTHORIZED",
+        )
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise AuthVerificationError("Malformed JSON from /verify-token.") from exc
+
+    # Support either flat payload or {"data": {...}} / {"user": {...}} envelope
+    if isinstance(data, dict):
+        if isinstance(data.get("data"), dict):
+            data = data["data"]
+        elif isinstance(data.get("user"), dict):
+            data = data["user"]
+
+    return _validate_verified_context(data)
+
+
+def verify_session_token(
+    token: str,
+    mode: Optional[str] = None,
+) -> dict[str, Any]:
+    """Verify a session token and return a validated user context (user_id, org_id, role).
+
+    Modes:
+    - 'remote': Strictly calls backend /verify-token.
+    - 'local': Strictly verifies HS256 Lean JWT locally and resolves live user context.
+    - 'auto': Calls /verify-token if AUTH_VERIFY_URL is configured; otherwise local HS256.
+    """
+    if not token or not isinstance(token, str) or not token.strip():
+        raise AuthVerificationError("Missing session token.")
+
+    raw_token = token.strip()
+    if raw_token.lower().startswith("bearer "):
+        raw_token = raw_token[7:].strip()
+
+    if not raw_token:
+        raise AuthVerificationError("Missing session token.")
+
+    resolved_mode = (mode or settings.VERIFY_TOKEN_MODE or "auto").lower()
+    if resolved_mode == "auto":
+        resolved_mode = "remote" if settings.AUTH_VERIFY_URL else "local"
+
+    if resolved_mode == "remote":
+        return verify_token_via_backend(raw_token)
+
+    try:
+        ctx = verify_jwt(raw_token)
+    except jwt.ExpiredSignatureError as exc:
+        raise AuthVerificationError("Session token has expired.") from exc
+    except Exception as exc:
+        raise AuthVerificationError(f"Invalid session token: {exc}") from exc
+
+    return _validate_verified_context(ctx)
 
 
 # ---------------------------------------------------------------------------

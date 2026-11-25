@@ -31,5 +31,12 @@ class Settings:
     # Fallback to mock data if PostgreSQL is unreachable (useful for dev & tests)
     USE_MOCK_FALLBACK: bool = os.getenv("USE_MOCK_FALLBACK", "true").lower() in ("true", "1", "yes")
 
+    # MCP-2.1: Auth Context Propagation & /verify-token settings
+    BACKEND_URL: str = os.getenv("BACKEND_URL", "http://localhost:8000")
+    AUTH_VERIFY_URL: str = os.getenv("AUTH_VERIFY_URL", "")
+    VERIFY_TOKEN_MODE: str = os.getenv("VERIFY_TOKEN_MODE", "auto").lower()
+    VERIFY_TOKEN_TIMEOUT: float = float(os.getenv("VERIFY_TOKEN_TIMEOUT", "5.0"))
+    REQUIRE_AUTH_CONTEXT: bool = os.getenv("REQUIRE_AUTH_CONTEXT", "false").lower() in ("true", "1", "yes")
+
 
 settings = Settings()

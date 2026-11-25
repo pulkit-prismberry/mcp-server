@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.0-dev] - 2026-11-25 (MCP-2.1 Step 1)
+
+### Added
+- **Auth Context Propagation (Step 1 — `/verify-token` Client & Config)**:
+  - Added `BACKEND_URL`, `AUTH_VERIFY_URL`, `VERIFY_TOKEN_MODE` (`auto` | `remote` | `local`), `VERIFY_TOKEN_TIMEOUT`, and `REQUIRE_AUTH_CONTEXT` settings in [config.py](file:///home/pulkit/Downloads/mcp-server/config.py).
+  - Implemented `AuthVerificationError`, `_validate_verified_context()`, `verify_token_via_backend()`, and `verify_session_token()` in [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py) to verify session tokens against `/verify-token` (or local HS256 Lean JWT) and validate mandatory `user_id`, `org_id`, `role`, and `is_active` claims.
+  - Added unit tests in [tests/test_auth_verify_token.py](file:///home/pulkit/Downloads/mcp-server/tests/test_auth_verify_token.py).
+
+---
+
 ## [3.1.0] - 2026-11-24
 
 ### Added
