@@ -17,7 +17,6 @@ BASE_DIR = Path(__file__).resolve().parent
 class Settings:
     SERVER_NAME: str = os.getenv("MCP_SERVER_NAME", "Multi-Tenant Support AI")
     DATA_DIR: Path = BASE_DIR / "data"
-    DEFAULT_CSV_PATH: Path = DATA_DIR / "customer_support_tickets.csv"
 
     # PostgreSQL Database Settings
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")

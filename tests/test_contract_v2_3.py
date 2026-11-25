@@ -15,8 +15,11 @@ from utils.auth import (
     BOB_CONTEXT,
     CHARLIE_CONTEXT,
     DAVE_CONTEXT,
+    decode_raw_jwt_claims,
     generate_approval_token,
     generate_jwt,
+    get_live_user_context,
+    update_live_user_role,
     verify_jwt,
 )
 
@@ -37,6 +40,41 @@ class TestContractV23IdentitiesAndJWT(unittest.TestCase):
         self.assertEqual(verified["customer_id"], CHARLIE_CONTEXT["customer_id"])
         self.assertEqual(verified["org_id"], CHARLIE_CONTEXT["org_id"])
         self.assertEqual(verified["role"], "End_Customer")
+
+    def test_lean_token_claims_structure(self):
+        """Verify token is lean: role, org_id, and permissions are NOT baked into JWT (Section 2.B & 2.C)."""
+        token = generate_jwt(ALICE_CONTEXT, lean=True)
+        raw_claims = decode_raw_jwt_claims(token)
+        # Required lean claims
+        self.assertEqual(raw_claims["sub"], ALICE_CONTEXT["user_id"])
+        self.assertEqual(raw_claims["user_id"], ALICE_CONTEXT["user_id"])
+        self.assertIn("exp", raw_claims)
+        self.assertEqual(raw_claims["iss"], "support-ai-backend")
+        self.assertEqual(raw_claims["aud"], "support-ai-services")
+        # Must NOT be statically baked into lean token
+        self.assertNotIn("role", raw_claims)
+        self.assertNotIn("org_id", raw_claims)
+        self.assertNotIn("permissions", raw_claims)
+
+    def test_dynamic_live_resolution_and_instant_revocation(self):
+        """Verify dynamic resolution and instant permission revocation (Section 2.B & 2.D)."""
+        alice_uuid = ALICE_CONTEXT["user_id"]
+        token = generate_jwt(ALICE_CONTEXT, lean=True)
+        
+        # 1. Normal resolution reflects active live role
+        verified = verify_jwt(token)
+        self.assertEqual(verified["role"], "Org_Admin")
+        self.assertIn("*", verified["permissions"])
+
+        # 2. Instant role change takes effect immediately without minting a new token
+        try:
+            update_live_user_role(alice_uuid, new_role="Auditor", new_permissions=["tickets:read"])
+            updated_verified = verify_jwt(token)
+            self.assertEqual(updated_verified["role"], "Auditor")
+            self.assertEqual(updated_verified["permissions"], ["tickets:read"])
+        finally:
+            # Restore Alice's role
+            update_live_user_role(alice_uuid, new_role="Org_Admin", new_permissions=["*"])
 
 
 class TestContractV23HealthProbe(unittest.TestCase):

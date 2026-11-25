@@ -1,4 +1,4 @@
-"""The 6 Canonical MCP Tools conforming to Team Contract v2.3 Final."""
+"""The 6 Canonical MCP Tools conforming to Team Contract v3.0 Locked."""
 from typing import Annotated, Any, Optional, Union
 from pydantic import Field
 
@@ -16,8 +16,8 @@ def get_ticket_details(
     """Retrieve complete ticket details.
 
     Permissions (Section 6.1):
-    - Staff can view any org ticket.
-    - Customer can ONLY view tickets matching their customer_id.
+    - Staff with ticket.read:org can view any org ticket.
+    - Customer with ticket.read:own can ONLY view tickets matching their customer_id.
     - Mismatches or cross-tenant queries return 404 NOT_FOUND.
 
     Args:
@@ -55,8 +55,8 @@ def search_tickets(
     """Search tickets within the caller's authorized scope (Section 6.2).
 
     Permissions:
-    - Staff searches across org tickets.
-    - Customer searches strictly within their own tickets.
+    - Staff with ticket.read:org searches across org tickets.
+    - Customer with ticket.read:own searches strictly within their own tickets.
 
     Args:
         query: Search keywords.
@@ -97,8 +97,8 @@ def create_ticket(
     """Create a new support ticket with status 'open' (Section 6.3).
 
     Rules:
-    - If caller is End_Customer: customer_id is automatically taken from their JWT; any passed customer_id is ignored.
-    - If caller is Support_Agent or Org_Admin: caller may provide customer_id: UUID. Backend validates that the customer exists and belongs to the staff member's org_id. If invalid or cross-tenant, returns 404 NOT_FOUND.
+    - If caller is Customer: customer_id is automatically taken from their JWT; any passed customer_id is ignored.
+    - If caller is Staff: requires ticket.write:org; caller may provide customer_id: UUID. Backend validates customer belongs to staff's org_id. If invalid or cross-tenant, returns 404 NOT_FOUND.
 
     Args:
         title: Summary of issue.
@@ -140,9 +140,9 @@ def update_ticket_status(
     """Update ticket status following the lifecycle state machine (Section 6.4).
 
     Permissions:
-    - Staff only (Org_Admin, Support_Agent).
-    - Exception: Customers may only transition their own tickets from resolved -> closed.
-    - Status changes must follow the valid state machine (Section 4). Invalid transitions return 409 CONFLICT.
+    - Staff with ticket.status:update can perform valid transitions.
+    - Customer: Allowed ONLY if updating own ticket from resolved -> closed.
+    - Invalid transitions return 409 CONFLICT.
 
     Args:
         ticket_id: Ticket identifier.
@@ -175,7 +175,7 @@ def add_internal_note(
     """Add a staff-only whisper note to a ticket (Section 6.5).
 
     Permissions:
-    - Staff only (Org_Admin, Support_Agent).
+    - Staff with ticket.note:write.
     - Customer -> 403 FORBIDDEN.
 
     Args:
@@ -210,11 +210,11 @@ def issue_refund(
     """Execute refund adhering to Section 6.6 defense-in-depth security rules.
 
     Enforcement:
-    1. Only Org_Admin (Alice) allowed. (Support_Agent Bob -> 403 FORBIDDEN).
-    2. If amount > 100.00, requires valid approval_token.
-    3. Token Validation: 15-minute TTL, single-use, binds invoice_id, amount, org_id, approver_id.
-    4. Amount cannot exceed remaining unrefunded invoice balance.
-    5. Idempotency key deduplication.
+    1. Idempotency Check FIRST.
+    2. Caller must have refund.issue permission.
+    3. If amount > 100.00, requires valid approval_token.
+    4. Token Validation: 15-minute TTL, single-use, binds invoice_id, amount, org_id, approver_id.
+    5. Amount cannot exceed remaining unrefunded invoice balance.
 
     Args:
         invoice_id: Target invoice.
@@ -245,8 +245,18 @@ def check_health() -> dict[str, Any]:
     return TicketService.check_health()
 
 
+def check_liveness() -> dict[str, Any]:
+    """Liveness probe (GET /health/live) returning {'status': 'alive'} (Section 3.C)."""
+    return TicketService.check_liveness()
+
+
+def check_readiness() -> dict[str, Any]:
+    """Readiness probe (GET /health/ready) verifying dependencies (Section 3.C)."""
+    return TicketService.check_readiness()
+
+
 def register_ticket_tools(mcp: Any) -> None:
-    """Register all Contract v2.3 Final canonical tools with the FastMCP server instance."""
+    """Register all Contract v3.0 Locked canonical tools with the FastMCP server instance."""
     mcp.tool()(get_ticket_details)
     mcp.tool()(search_tickets)
     mcp.tool()(create_ticket)
@@ -254,3 +264,5 @@ def register_ticket_tools(mcp: Any) -> None:
     mcp.tool()(add_internal_note)
     mcp.tool()(issue_refund)
     mcp.tool()(check_health)
+    mcp.tool()(check_liveness)
+    mcp.tool()(check_readiness)

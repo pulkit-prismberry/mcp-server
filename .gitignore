@@ -11,3 +11,6 @@ data/*.csv
 *.csv
 .pytest_cache/
 
+# Personal developer notes (not for version control)
+DEVELOPER_NOTES.md
+

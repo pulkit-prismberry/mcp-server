@@ -23,11 +23,11 @@ mcp-server/
 │   └── responses.py       # Standardized success_response & error_response
 ├── data/                  # Data directory (mock data and datasets)
 │   ├── __init__.py
-│   ├── mock_tickets.py    # In-memory mock ticket records
-│   └── customer_support_tickets.csv # Support tickets CSV dataset
+│   └── mock_tickets.py    # In-memory mock ticket records
 ├── scripts/               # Operational, migration & seeding scripts
 │   ├── __init__.py
-│   └── seed_db.py         # PostgreSQL schema & CSV migration script
+│   ├── seed_db.py         # PostgreSQL schema & 4 deterministic records seeder
+│   └── test_mcp_client.py # Live MCP stdio client verification script
 └── tests/                 # Unit and integration test suite
     ├── __init__.py
     ├── test_tools.py      # Tests for MCP tool endpoints & validations
@@ -69,7 +69,7 @@ PGSCHEMA=support
 Seed your PostgreSQL database with the ticket dataset:
 
 ```bash
-python scripts/seed_db.py --csv data/customer_support_tickets.csv
+python scripts/seed_db.py
 ```
 
 ### 3. Running the MCP Server

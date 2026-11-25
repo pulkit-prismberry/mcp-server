@@ -63,6 +63,18 @@ class ApprovalStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class RoleModel(BaseModel):
+    """Dynamic role model compliant with Section 4.A (Roles Table)."""
+    id: str = Field(..., description="Role UUID")
+    org_id: str = Field(..., description="Organization UUID")
+    name: str = Field(..., description="Role name, e.g. super-admin, Org_Admin, Support_Agent")
+    description: Optional[str] = Field(default=None, description="Role description")
+    is_system: bool = Field(default=False, description="TRUE for seeded super-admin")
+    permissions: list[str] = Field(default_factory=list, description="Array of permission strings or ['*']")
+    created_at: str = Field(..., description="ISO-8601 creation timestamp")
+    updated_at: str = Field(..., description="ISO-8601 update timestamp")
+
+
 # ---------------------------------------------------------------------------
 # Core Entities & Data Models
 # ---------------------------------------------------------------------------
