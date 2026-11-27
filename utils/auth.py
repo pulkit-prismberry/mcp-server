@@ -1,4 +1,5 @@
 """Authentication utilities, deterministic test identities, and zero-trust token helpers (Contract v3.0 Locked)."""
+from contextvars import ContextVar
 import hashlib
 import hmac
 import os
@@ -9,6 +10,11 @@ import jwt
 
 from config import settings
 from data.mock_identities import BOB_CONTEXT, IDENTITIES, IDENTITIES_BY_USER_ID
+
+_REQUEST_VERIFIED_CTX: ContextVar[Optional[dict[str, Any]]] = ContextVar(
+    "_REQUEST_VERIFIED_CTX",
+    default=None,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +630,10 @@ def resolve_verified_user_context(
     session_token: Optional[str] = None,
 ) -> dict[str, Any]:
     """Resolve and strictly verify caller context from session_token or user_context (MCP-2.1)."""
+    cached_ctx = _REQUEST_VERIFIED_CTX.get()
+    if cached_ctx is not None:
+        return cached_ctx
+
     if session_token is not None and str(session_token).strip():
         return verify_session_token(str(session_token))
 

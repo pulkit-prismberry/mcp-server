@@ -5,9 +5,11 @@ from pydantic import Field
 
 from services.ticket_service import TicketService
 from utils.auth import extract_token_from_mcp_context
+from utils.rbac import require_permissions
 from utils.responses import error_response
 
 
+@require_permissions("ticket.read:org", "ticket.read:own")
 def get_ticket_details(
     ticket_id: Annotated[Union[str, int], Field(description="Ticket unique identifier (UUID or integer ID).")],
     user_context: Annotated[
@@ -48,6 +50,7 @@ def get_ticket_details(
         return error_response("INTERNAL_ERROR", f"Failed to retrieve ticket: {exc}")
 
 
+@require_permissions("ticket.read:org", "ticket.read:own")
 def search_tickets(
     query: Annotated[Optional[str], Field(default=None, description="Search term matched against title and description via substring search.")] = None,
     status: Annotated[Optional[str], Field(default=None, description="Optional ticket status filter ('open', 'in_progress', 'resolved', 'closed').")] = None,
@@ -95,6 +98,7 @@ def search_tickets(
         return error_response("INTERNAL_ERROR", f"Failed to search tickets: {exc}")
 
 
+@require_permissions("ticket.write:org", "ticket.write:own")
 def create_ticket(
     title: Annotated[Optional[str], Field(default=None, description="Ticket title / headline.")] = None,
     subject: Annotated[Optional[str], Field(default=None, description="Ticket subject alias.")] = None,
@@ -148,6 +152,7 @@ def create_ticket(
         return error_response("INTERNAL_ERROR", f"Failed to create ticket: {exc}")
 
 
+@require_permissions("ticket.status:update", "ticket.read:own", "ticket.write:own")
 def update_ticket_status(
     ticket_id: Annotated[Union[str, int], Field(description="Target ticket UUID or integer ID.")],
     status: Annotated[str, Field(description="New status ('open', 'in_progress', 'resolved', 'closed').")],
@@ -190,6 +195,10 @@ def update_ticket_status(
         return error_response("INTERNAL_ERROR", f"Failed to update ticket status: {exc}")
 
 
+@require_permissions(
+    "ticket.note:write",
+    message="Only staff with 'ticket.note:write' permission can add internal notes.",
+)
 def add_internal_note(
     ticket_id: Annotated[Union[str, int], Field(description="Target ticket UUID or integer ID.")],
     note: Annotated[str, Field(min_length=1, max_length=5000, description="Internal staff-only note text.")],
@@ -228,6 +237,10 @@ def add_internal_note(
         return error_response("INTERNAL_ERROR", f"Failed to add internal note: {exc}")
 
 
+@require_permissions(
+    "refund.issue",
+    message="Only Org_Admin users with 'refund.issue' permission can execute refunds.",
+)
 def issue_refund(
     invoice_id: Annotated[str, Field(description="Invoice UUID / ID to refund.")],
     amount: Annotated[Union[str, float], Field(description="Amount to refund (e.g. '250.00').")],
