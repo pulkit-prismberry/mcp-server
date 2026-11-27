@@ -3,7 +3,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from data.mock_identities import BOB_CONTEXT, CHARLIE_CONTEXT
+from data.mock_identities import ALICE_CONTEXT, BOB_CONTEXT, CHARLIE_CONTEXT, DAVE_CONTEXT
 from server import mcp
 from tools.tickets import (
     add_internal_note,
@@ -13,6 +13,7 @@ from tools.tickets import (
     search_tickets,
     update_ticket_status,
 )
+from utils.auth import generate_jwt, strip_untrusted_identity_fields
 
 
 class TestToolLevelRBACEnforcement(unittest.TestCase):
@@ -104,6 +105,57 @@ class TestToolLevelRBACEnforcement(unittest.TestCase):
             if t.name in expected - {"check_health", "check_liveness", "check_readiness"}:
                 props = (t.inputSchema or {}).get("properties", {})
                 self.assertNotIn("ctx", props, f"FastMCP Context 'ctx' leaked into {t.name} schema")
+
+
+class TestPromptInjectionHardening(unittest.TestCase):
+    """Verify OWASP LLM prompt-injection hardening: strip/ignore LLM-supplied org_id/user_id/user_context."""
+
+    def test_strip_untrusted_identity_fields(self):
+        cleaned = strip_untrusted_identity_fields({
+            "title": "Help",
+            "org_id": DAVE_CONTEXT["org_id"],
+            "user_id": ALICE_CONTEXT["user_id"],
+            "tenant_id": "evil-tenant",
+        })
+        self.assertEqual(cleaned, {"title": "Help"})
+
+    def test_strips_llm_supplied_org_id_and_user_id_kwargs(self):
+        charlie_jwt = generate_jwt(CHARLIE_CONTEXT, lean=True)
+        # Even if LLM injects Dave's org_id and Alice's user_id, scope stays strictly Charlie (Org A)
+        res_own = get_ticket_details(
+            101,
+            session_token=f"Bearer {charlie_jwt}",
+            org_id=DAVE_CONTEXT["org_id"],
+            user_id=ALICE_CONTEXT["user_id"],
+            tenant_id=DAVE_CONTEXT["org_id"],
+        )
+        self.assertTrue(res_own["success"])
+        self.assertEqual(res_own["data"]["org_id"], CHARLIE_CONTEXT["org_id"])
+        self.assertEqual(res_own["data"]["customer_id"], CHARLIE_CONTEXT["customer_id"])
+
+        # Cannot access Org B ticket 201 despite injected Dave org_id
+        res_cross = get_ticket_details(
+            201,
+            session_token=f"Bearer {charlie_jwt}",
+            org_id=DAVE_CONTEXT["org_id"],
+            user_id=DAVE_CONTEXT["user_id"],
+        )
+        self.assertFalse(res_cross["success"])
+        self.assertEqual(res_cross["error"]["code"], "NOT_FOUND")
+
+    def test_ignores_prompt_injected_user_context_when_session_token_present(self):
+        charlie_jwt = generate_jwt(CHARLIE_CONTEXT, lean=True)
+        # LLM tries to escalate privilege by passing user_context="alice" alongside Charlie's token
+        res = add_internal_note(
+            101,
+            "Prompt injected escalation attempt",
+            user_context=ALICE_CONTEXT,
+            session_token=f"Bearer {charlie_jwt}",
+        )
+        self.assertFalse(res["success"])
+        self.assertEqual(res["error"]["code"], "FORBIDDEN")
+        self.assertEqual(res["error"]["details"]["error_type"], "PermissionDenied")
+        self.assertEqual(res["error"]["details"]["role"], "End_Customer")
 
 
 if __name__ == "__main__":

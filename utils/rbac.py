@@ -1,16 +1,20 @@
-"""Tool-level RBAC decorator & middleware enforcing Contract v3.0 permissions prior to DB execution."""
+"""Tool-level RBAC & prompt-injection hardening middleware enforcing Contract v3.0 prior to DB execution."""
 from functools import wraps
 import inspect
+import logging
 from typing import Any, Callable, Optional
 
 from utils.auth import (
     _REQUEST_VERIFIED_CTX,
+    UNTRUSTED_LLM_IDENTITY_FIELDS,
     AuthVerificationError,
     extract_token_from_mcp_context,
     has_permission,
     resolve_verified_user_context,
 )
 from utils.responses import error_response
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionDeniedError(Exception):
@@ -53,14 +57,36 @@ def require_permissions(
 
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Prompt-injection hardening (OWASP LLM01 / LLM06):
+            # Strip any LLM-supplied org_id, user_id, or tenant_id arguments.
+            stripped_keys = [k for k in UNTRUSTED_LLM_IDENTITY_FIELDS if k in kwargs]
+            if stripped_keys:
+                logger.warning(
+                    "Prompt-injection hardening: stripped untrusted identity argument(s) %s from tool '%s'.",
+                    stripped_keys,
+                    func.__name__,
+                )
+                for key in stripped_keys:
+                    kwargs.pop(key, None)
+
             bound = sig.bind_partial(*args, **kwargs)
             bound.apply_defaults()
             arguments = bound.arguments
 
-            user_context = arguments.get("user_context")
             session_token = arguments.get("session_token")
             ctx = arguments.get("ctx")
             effective_token = session_token or extract_token_from_mcp_context(ctx)
+
+            # When a verified session token is present, ignore any LLM-supplied user_context
+            # so prompt injection cannot override the authenticated caller or tenant scope.
+            user_context = None if effective_token else arguments.get("user_context")
+            if effective_token and arguments.get("user_context") is not None:
+                logger.warning(
+                    "Prompt-injection hardening: ignored untrusted 'user_context' because a verified session token is present in '%s'.",
+                    func.__name__,
+                )
+                if "user_context" in kwargs:
+                    kwargs["user_context"] = None
 
             try:
                 verified_ctx = resolve_verified_user_context(

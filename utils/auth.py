@@ -16,6 +16,13 @@ _REQUEST_VERIFIED_CTX: ContextVar[Optional[dict[str, Any]]] = ContextVar(
     default=None,
 )
 
+UNTRUSTED_LLM_IDENTITY_FIELDS: frozenset[str] = frozenset({"org_id", "user_id", "tenant_id"})
+
+
+def strip_untrusted_identity_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of payload with any LLM-supplied tenant/user identity fields removed."""
+    return {k: v for k, v in payload.items() if k not in UNTRUSTED_LLM_IDENTITY_FIELDS}
+
 
 # ---------------------------------------------------------------------------
 # Section 4: Canonical Permission Catalog & Authorization (Contract v3.0)
