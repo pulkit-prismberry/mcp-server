@@ -17,8 +17,9 @@ from data.mock_tickets import (
 from db.connection import is_db_connected
 from db.ticket_repository import TicketRepository
 from utils.auth import (
+    AuthVerificationError,
     has_permission,
-    normalize_user_context,
+    resolve_verified_user_context,
     verify_and_consume_approval_token,
 )
 from utils.responses import error_response, success_response
@@ -58,6 +59,18 @@ def _resolve_ticket_mock(ticket_identifier: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _resolve_caller_context(
+    user_context: Optional[Any],
+    session_token: Optional[str] = None,
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Resolve and strictly verify caller session context; returns (ctx, error_envelope)."""
+    try:
+        ctx = resolve_verified_user_context(user_context=user_context, session_token=session_token)
+        return ctx, None
+    except AuthVerificationError as exc:
+        return None, error_response(exc.code, exc.message)
+
+
 class TicketService:
     """Service layer implementing the 6 canonical MCP tools backed directly by PostgreSQL (Contract v3.0 Locked)."""
 
@@ -70,6 +83,7 @@ class TicketService:
         cls,
         ticket_id: Any,
         user_context: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ) -> dict[str, Any]:
         """Retrieve full ticket details directly from PostgreSQL.
 
@@ -78,7 +92,9 @@ class TicketService:
         - Customer with ticket.read:own can ONLY view tickets matching their customer_id.
         - Cross-tenant or non-owned returns 404 NOT_FOUND.
         """
-        ctx = normalize_user_context(user_context)
+        ctx, auth_err = _resolve_caller_context(user_context, session_token)
+        if auth_err:
+            return auth_err
 
         ticket = None
         # Primary: PostgreSQL Database
@@ -87,7 +103,7 @@ class TicketService:
         except Exception as exc:
             logger.warning(f"Database query error in get_ticket: {exc}")
             if not settings.USE_MOCK_FALLBACK:
-                return error_response("INTERNAL_ERROR", f"Database error: {exc}")
+                return error_response("SERVICE_UNAVAILABLE", f"Database error: {exc}")
 
         # Secondary fallback if allowed and DB unavailable / not found in DB
         if ticket is None and settings.USE_MOCK_FALLBACK:
@@ -135,9 +151,12 @@ class TicketService:
         limit: int = 10,
         offset: int = 0,
         user_context: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ) -> dict[str, Any]:
         """Case-insensitive substring search directly from PostgreSQL (Section 6.2)."""
-        ctx = normalize_user_context(user_context)
+        ctx, auth_err = _resolve_caller_context(user_context, session_token)
+        if auth_err:
+            return auth_err
         is_staff_search = has_permission(ctx, "ticket.read:org")
         target_cust_id = None if is_staff_search else (ctx.get("customer_id") or ctx["user_id"])
 
@@ -157,7 +176,7 @@ class TicketService:
         except Exception as exc:
             logger.warning(f"Database query error in search_tickets: {exc}")
             if not settings.USE_MOCK_FALLBACK:
-                return error_response("INTERNAL_ERROR", f"Database error: {exc}")
+                return error_response("SERVICE_UNAVAILABLE", f"Database error: {exc}")
 
         # Secondary fallback if mock fallback enabled
         matching = []
@@ -204,9 +223,12 @@ class TicketService:
         priority: str = "medium",
         customer_id: Optional[str] = None,
         user_context: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new ticket with status 'open' persisting to PostgreSQL (Section 6.3)."""
-        ctx = normalize_user_context(user_context)
+        ctx, auth_err = _resolve_caller_context(user_context, session_token)
+        if auth_err:
+            return auth_err
 
         norm_category = category.strip().lower()
         if norm_category not in VALID_CATEGORIES:
@@ -276,7 +298,7 @@ class TicketService:
         except Exception as exc:
             logger.warning(f"Could not persist ticket to PostgreSQL: {exc}")
             if not settings.USE_MOCK_FALLBACK:
-                return error_response("INTERNAL_ERROR", f"Failed to persist ticket: {exc}")
+                return error_response("SERVICE_UNAVAILABLE", f"Failed to persist ticket: {exc}")
 
         # Keep in-memory mock in sync
         MOCK_TICKETS[new_ticket_id] = new_ticket
@@ -293,9 +315,12 @@ class TicketService:
         status: str,
         reason: Optional[str] = None,
         user_context: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ) -> dict[str, Any]:
         """Update ticket status enforcing lifecycle state machine rules in PostgreSQL (Section 4 & 6.4)."""
-        ctx = normalize_user_context(user_context)
+        ctx, auth_err = _resolve_caller_context(user_context, session_token)
+        if auth_err:
+            return auth_err
         ticket_res = cls.get_ticket(ticket_id, ctx)
         if not ticket_res.get("success"):
             return ticket_res
@@ -333,7 +358,7 @@ class TicketService:
         except Exception as exc:
             logger.warning(f"Could not update ticket in PostgreSQL: {exc}")
             if not settings.USE_MOCK_FALLBACK:
-                return error_response("INTERNAL_ERROR", f"Failed to update ticket in database: {exc}")
+                return error_response("SERVICE_UNAVAILABLE", f"Failed to update ticket in database: {exc}")
 
         # Update returned object & mock store
         ticket["status"] = new_status
@@ -358,9 +383,12 @@ class TicketService:
         ticket_id: Any,
         note: str,
         user_context: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ) -> dict[str, Any]:
         """Add staff-only internal note stored in PostgreSQL (Section 6.5)."""
-        ctx = normalize_user_context(user_context)
+        ctx, auth_err = _resolve_caller_context(user_context, session_token)
+        if auth_err:
+            return auth_err
 
         # RBAC Check: Staff with ticket.note:write
         if not has_permission(ctx, "ticket.note:write") or ctx.get("role") == "End_Customer":
@@ -390,7 +418,7 @@ class TicketService:
         except Exception as exc:
             logger.warning(f"Could not save internal note to PostgreSQL: {exc}")
             if not settings.USE_MOCK_FALLBACK:
-                return error_response("INTERNAL_ERROR", f"Database error saving note: {exc}")
+                return error_response("SERVICE_UNAVAILABLE", f"Database error saving note: {exc}")
 
         # In-memory mock sync
         key = ticket.get("ticket_id", ticket_id)
@@ -412,9 +440,12 @@ class TicketService:
         idempotency_key: str,
         approval_token: Optional[str] = None,
         user_context: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ) -> dict[str, Any]:
         """Execute refund adhering to Section 6.6 defense-in-depth rules persisted in PostgreSQL."""
-        ctx = normalize_user_context(user_context)
+        ctx, auth_err = _resolve_caller_context(user_context, session_token)
+        if auth_err:
+            return auth_err
 
         # 1. Idempotency Check FIRST (Section 6.6 Rule 1)
         try:
@@ -453,17 +484,7 @@ class TicketService:
         if not invoice or str(invoice.get("org_id")) != str(ctx["org_id"]):
             return error_response("NOT_FOUND", f"Invoice '{invoice_id}' not found.")
 
-        # 5. Amount cannot exceed remaining unrefunded balance (Section 6.6 Rule 4)
-        total_amt = float(invoice.get("total_amount", 0.0))
-        refunded_amt = float(invoice.get("refunded_amount", 0.0))
-        remaining = round(total_amt - refunded_amt, 2)
-        if num_amount > remaining:
-            return error_response(
-                "CONFLICT",
-                f"Refund amount ${num_amount:.2f} exceeds remaining balance of ${remaining:.2f}."
-            )
-
-        # 6. Token check for amount > 100.00 (Section 6.6 Rule 3)
+        # 3. Token check for amount > 100.00 (Section 6.6 Rule 3)
         if num_amount > 100.00:
             if not approval_token or not approval_token.strip():
                 return error_response("FORBIDDEN", "Refunds exceeding $100.00 require a valid approval_token.")
@@ -476,6 +497,16 @@ class TicketService:
             )
             if not valid:
                 return error_response("FORBIDDEN", err or "Invalid approval_token.")
+
+        # 4. Amount cannot exceed remaining unrefunded balance (Section 6.6 Rule 4)
+        total_amt = float(invoice.get("total_amount", 0.0))
+        refunded_amt = float(invoice.get("refunded_amount", 0.0))
+        remaining = round(total_amt - refunded_amt, 2)
+        if num_amount > remaining:
+            return error_response(
+                "CONFLICT",
+                f"Refund amount ${num_amount:.2f} exceeds remaining balance of ${remaining:.2f}."
+            )
 
         # 5. Atomic execution & audit log (Section 6.6 Rule 5)
         new_refunded_total = round(refunded_amt + num_amount, 2)
@@ -498,7 +529,7 @@ class TicketService:
         except Exception as exc:
             logger.warning(f"Could not record refund in PostgreSQL: {exc}")
             if not settings.USE_MOCK_FALLBACK:
-                return error_response("INTERNAL_ERROR", f"Failed to record refund in database: {exc}")
+                return error_response("SERVICE_UNAVAILABLE", f"Failed to record refund in database: {exc}")
 
         invoice_copy = dict(invoice)
         invoice_copy["refunded_amount"] = new_refunded_total

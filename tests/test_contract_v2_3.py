@@ -10,11 +10,13 @@ from tools.tickets import (
     search_tickets,
     update_ticket_status,
 )
-from utils.auth import (
+from data.mock_identities import (
     ALICE_CONTEXT,
     BOB_CONTEXT,
     CHARLIE_CONTEXT,
     DAVE_CONTEXT,
+)
+from utils.auth import (
     decode_raw_jwt_claims,
     generate_approval_token,
     generate_jwt,
@@ -268,12 +270,18 @@ class TestContractV23Tool6IssueRefund(unittest.TestCase):
 
     def test_refund_exceeding_balance_conflict(self):
         # Balance is 500 - 150 = 350
+        token = generate_approval_token(
+            "inv_org_a_001",
+            999.00,
+            ALICE_CONTEXT["org_id"],
+            approver_id=ALICE_CONTEXT["user_id"],
+        )
         res = issue_refund(
             invoice_id="inv_org_a_001",
             amount="999.00",
             reason="Too large",
             idempotency_key="idemp_too_large",
-            approval_token="any_token",
+            approval_token=token,
             user_context=ALICE_CONTEXT,
         )
         self.assertFalse(res.get("success"))

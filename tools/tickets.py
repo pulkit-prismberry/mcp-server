@@ -1,8 +1,10 @@
 """The 6 Canonical MCP Tools conforming to Team Contract v3.0 Locked."""
 from typing import Annotated, Any, Optional, Union
+from mcp.server.fastmcp import Context
 from pydantic import Field
 
 from services.ticket_service import TicketService
+from utils.auth import extract_token_from_mcp_context
 from utils.responses import error_response
 
 
@@ -12,6 +14,11 @@ def get_ticket_details(
         Optional[Union[dict[str, Any], str]],
         Field(default=None, description="Caller user context dictionary (user_id, org_id, role, customer_id) or test alias ('alice', 'bob', 'charlie', 'dave').")
     ] = None,
+    session_token: Annotated[
+        Optional[str],
+        Field(default=None, description="Verified session bearer token (validated via GET /auth/me).")
+    ] = None,
+    ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Retrieve complete ticket details.
 
@@ -35,7 +42,8 @@ def get_ticket_details(
         except (ValueError, TypeError):
             pass
 
-        return TicketService.get_ticket(ticket_id, user_context)
+        effective_token = session_token or extract_token_from_mcp_context(ctx)
+        return TicketService.get_ticket(ticket_id, user_context, session_token=effective_token)
     except Exception as exc:
         return error_response("INTERNAL_ERROR", f"Failed to retrieve ticket: {exc}")
 
@@ -51,6 +59,11 @@ def search_tickets(
         Optional[Union[dict[str, Any], str]],
         Field(default=None, description="Caller context dictionary or test alias.")
     ] = None,
+    session_token: Annotated[
+        Optional[str],
+        Field(default=None, description="Verified session bearer token (validated via GET /auth/me).")
+    ] = None,
+    ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Search tickets within the caller's authorized scope (Section 6.2).
 
@@ -76,6 +89,7 @@ def search_tickets(
             limit=limit or 10,
             offset=offset or 0,
             user_context=user_context,
+            session_token=session_token or extract_token_from_mcp_context(ctx),
         )
     except Exception as exc:
         return error_response("INTERNAL_ERROR", f"Failed to search tickets: {exc}")
@@ -93,6 +107,11 @@ def create_ticket(
         Optional[Union[dict[str, Any], str]],
         Field(default=None, description="Caller context dictionary or test alias.")
     ] = None,
+    session_token: Annotated[
+        Optional[str],
+        Field(default=None, description="Verified session bearer token (validated via GET /auth/me).")
+    ] = None,
+    ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Create a new support ticket with status 'open' (Section 6.3).
 
@@ -123,6 +142,7 @@ def create_ticket(
             priority=priority or "medium",
             customer_id=customer_id,
             user_context=user_context,
+            session_token=session_token or extract_token_from_mcp_context(ctx),
         )
     except Exception as exc:
         return error_response("INTERNAL_ERROR", f"Failed to create ticket: {exc}")
@@ -136,6 +156,11 @@ def update_ticket_status(
         Optional[Union[dict[str, Any], str]],
         Field(default=None, description="Caller context dictionary or test alias.")
     ] = None,
+    session_token: Annotated[
+        Optional[str],
+        Field(default=None, description="Verified session bearer token (validated via GET /auth/me).")
+    ] = None,
+    ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Update ticket status following the lifecycle state machine (Section 6.4).
 
@@ -159,6 +184,7 @@ def update_ticket_status(
             status=status,
             reason=reason,
             user_context=user_context,
+            session_token=session_token or extract_token_from_mcp_context(ctx),
         )
     except Exception as exc:
         return error_response("INTERNAL_ERROR", f"Failed to update ticket status: {exc}")
@@ -171,6 +197,11 @@ def add_internal_note(
         Optional[Union[dict[str, Any], str]],
         Field(default=None, description="Caller context dictionary or test alias.")
     ] = None,
+    session_token: Annotated[
+        Optional[str],
+        Field(default=None, description="Verified session bearer token (validated via GET /auth/me).")
+    ] = None,
+    ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Add a staff-only whisper note to a ticket (Section 6.5).
 
@@ -191,6 +222,7 @@ def add_internal_note(
             ticket_id=ticket_id,
             note=note,
             user_context=user_context,
+            session_token=session_token or extract_token_from_mcp_context(ctx),
         )
     except Exception as exc:
         return error_response("INTERNAL_ERROR", f"Failed to add internal note: {exc}")
@@ -206,6 +238,11 @@ def issue_refund(
         Optional[Union[dict[str, Any], str]],
         Field(default=None, description="Caller context dictionary or test alias.")
     ] = None,
+    session_token: Annotated[
+        Optional[str],
+        Field(default=None, description="Verified session bearer token (validated via GET /auth/me).")
+    ] = None,
+    ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Execute refund adhering to Section 6.6 defense-in-depth security rules.
 
@@ -235,6 +272,7 @@ def issue_refund(
             idempotency_key=idempotency_key,
             approval_token=approval_token,
             user_context=user_context,
+            session_token=session_token or extract_token_from_mcp_context(ctx),
         )
     except Exception as exc:
         return error_response("INTERNAL_ERROR", f"Failed to execute refund: {exc}")

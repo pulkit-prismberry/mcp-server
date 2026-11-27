@@ -9,7 +9,7 @@ from tools.tickets import (
     search_tickets,
     update_ticket_status,
 )
-from utils.auth import ALICE_CONTEXT, BOB_CONTEXT
+from data.mock_identities import ALICE_CONTEXT, BOB_CONTEXT
 
 
 class TestGetTicketDetails(unittest.TestCase):

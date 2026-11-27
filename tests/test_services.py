@@ -1,7 +1,7 @@
 """Unit tests for TicketService."""
 import unittest
 from services.ticket_service import TicketService
-from utils.auth import BOB_CONTEXT
+from data.mock_identities import BOB_CONTEXT
 
 
 class TestTicketService(unittest.TestCase):

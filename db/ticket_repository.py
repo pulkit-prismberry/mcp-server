@@ -454,3 +454,44 @@ class TicketRepository:
                 LIMIT 1;
                 """, (customer_uuid.strip(), customer_uuid.strip(), org_id.strip()))
                 return cur.fetchone() is not None
+
+    @classmethod
+    def is_approval_token_consumed(cls, token_hash: str) -> bool:
+        """Check whether an approval token hash has already been consumed in PostgreSQL."""
+        schema = settings.SCHEMA or "support"
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {schema}.consumed_approval_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    invoice_id TEXT NOT NULL,
+                    org_id UUID NOT NULL,
+                    consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """)
+                cur.execute(
+                    f"SELECT 1 FROM {schema}.consumed_approval_tokens WHERE token_hash = %s LIMIT 1;",
+                    (token_hash,),
+                )
+                return cur.fetchone() is not None
+
+    @classmethod
+    def mark_approval_token_consumed(cls, token_hash: str, invoice_id: str, org_id: str) -> None:
+        """Persist consumed approval token hash in PostgreSQL to prevent replay across restarts."""
+        schema = settings.SCHEMA or "support"
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {schema}.consumed_approval_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    invoice_id TEXT NOT NULL,
+                    org_id UUID NOT NULL,
+                    consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """)
+                cur.execute(f"""
+                INSERT INTO {schema}.consumed_approval_tokens (token_hash, invoice_id, org_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (token_hash) DO NOTHING;
+                """, (token_hash, str(invoice_id), str(org_id)))
+                conn.commit()

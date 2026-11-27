@@ -12,11 +12,13 @@ from tools.tickets import (
     search_tickets,
     update_ticket_status,
 )
-from utils.auth import (
+from data.mock_identities import (
     ALICE_CONTEXT,
     BOB_CONTEXT,
     CHARLIE_CONTEXT,
     DAVE_CONTEXT,
+)
+from utils.auth import (
     decode_raw_jwt_claims,
     generate_approval_hmac,
     generate_approval_token,

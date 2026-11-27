@@ -7,12 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [3.2.0-dev] - 2026-11-25 (MCP-2.1 Step 1)
+## [3.2.2] - 2026-11-26 (Contract v3.0 Audit Fixes)
+
+### Fixed
+- **Strict Permission-Only RBAC (`utils/auth.py`)**: Removed role-name fallbacks (`Org_Admin`, `Support_Agent`, `End_Customer`) from `has_permission()` so authorization strictly checks canonical permissions per Contract v3.0 Section 4.A.
+- **Remote Mode Spoofing Guard (`utils/auth.py`)**: In `VERIFY_TOKEN_MODE=remote`, `resolve_verified_user_context()` now rejects raw `user_context` aliases and strictly requires a verified `Bearer` session token.
+- **Database `SERVICE_UNAVAILABLE` Error Code (`services/ticket_service.py`)**: Replaced `INTERNAL_ERROR` on PostgreSQL failures with `SERVICE_UNAVAILABLE` per Contract v3.0 Section 3.B.
+- **Persistent Single-Use Approval Tokens (`db/ticket_repository.py`, `utils/auth.py`, `scripts/seed_db.py`)**: Persisted consumed approval token SHA-256 hashes in `support.consumed_approval_tokens` to prevent replay across server restarts.
+- **Section 6.6 Refund Check Order (`services/ticket_service.py`)**: Enforced `approval_token` validation (Rule 3) before remaining balance check (Rule 4).
+
+---
+
+## [3.2.1] - 2026-11-26
+
+### Changed
+- **De-hardcoded `utils/auth.py`**:
+  - Moved deterministic Contract v3.0 test identities (`IDENTITIES`, `ALICE_CONTEXT`, `BOB_CONTEXT`, `CHARLIE_CONTEXT`, `DAVE_CONTEXT`) out of [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py) into [data/mock_identities.py](file:///home/pulkit/Downloads/mcp-server/data/mock_identities.py).
+  - Moved `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_ISSUER`, and `JWT_AUDIENCE` into [config.py](file:///home/pulkit/Downloads/mcp-server/config.py) (`settings`).
+  - Removed the hardcoded `approver_id` default UUID from `generate_approval_token()` and `generate_approval_hmac()` in [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py); `approver_id` is now an explicit required argument.
+  - Updated imports in `data/mock_tickets.py`, `scripts/`, and `tests/`.
+
+---
+
+## [3.2.0] - 2026-11-25 (MCP-2.1 Auth Context Propagation Complete)
 
 ### Added
+- **Auth Context Propagation (Step 3 — Agent Session Token Injection via FastMCP `Context`)**:
+  - Added `extract_token_from_mcp_context()` in [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py) to extract agent-injected `Bearer` / session tokens from MCP request `_meta`, HTTP `Authorization` headers, or `MCP_SESSION_TOKEN`.
+  - Wired `ctx: Optional[Context] = None` across all 6 canonical tools in [tools/tickets.py](file:///home/pulkit/Downloads/mcp-server/tools/tickets.py) (automatically hidden from LLM tool schemas by FastMCP).
+  - Updated [scripts/test_mcp_client.py](file:///home/pulkit/Downloads/mcp-server/scripts/test_mcp_client.py) to verify unauthenticated `401 UNAUTHORIZED` rejection and Lean JWT injection via MCP `meta` over stdio.
+  - Added Step 3 context injection unit tests in [tests/test_auth_verify_token.py](file:///home/pulkit/Downloads/mcp-server/tests/test_auth_verify_token.py).
+- **Auth Context Propagation (Step 2 — Strict Tool & Service Enforcement)**:
+  - Added `resolve_verified_user_context()` in [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py) and set `REQUIRE_AUTH_CONTEXT=true` by default in [config.py](file:///home/pulkit/Downloads/mcp-server/config.py).
+  - Removed the silent fallback to `BOB_CONTEXT` when `user_context` or `session_token` is missing or when a `Bearer` token is invalid.
+  - Added `session_token` parameter and strict `401 UNAUTHORIZED` enforcement across all 6 canonical tools in [tools/tickets.py](file:///home/pulkit/Downloads/mcp-server/tools/tickets.py) and [services/ticket_service.py](file:///home/pulkit/Downloads/mcp-server/services/ticket_service.py).
+  - Added Step 2 enforcement tests in [tests/test_auth_verify_token.py](file:///home/pulkit/Downloads/mcp-server/tests/test_auth_verify_token.py).
 - **Auth Context Propagation (Step 1 — `/verify-token` Client & Config)**:
-  - Added `BACKEND_URL`, `AUTH_VERIFY_URL`, `VERIFY_TOKEN_MODE` (`auto` | `remote` | `local`), `VERIFY_TOKEN_TIMEOUT`, and `REQUIRE_AUTH_CONTEXT` settings in [config.py](file:///home/pulkit/Downloads/mcp-server/config.py).
-  - Implemented `AuthVerificationError`, `_validate_verified_context()`, `verify_token_via_backend()`, and `verify_session_token()` in [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py) to verify session tokens against `/verify-token` (or local HS256 Lean JWT) and validate mandatory `user_id`, `org_id`, `role`, and `is_active` claims.
+  - Added `BACKEND_URL`, `AUTH_ME_URL` (defaulting to `GET /auth/me` per Contract v3.0 Section 2.C), `VERIFY_TOKEN_MODE` (`auto` | `remote` | `local`), `VERIFY_TOKEN_TIMEOUT`, and `REQUIRE_AUTH_CONTEXT` settings in [config.py](file:///home/pulkit/Downloads/mcp-server/config.py).
+  - Implemented `AuthVerificationError`, `_validate_verified_context()`, `verify_token_via_backend()` (`GET /auth/me` with `Authorization: Bearer <token>`), and `verify_session_token()` in [utils/auth.py](file:///home/pulkit/Downloads/mcp-server/utils/auth.py) to validate mandatory `user_id`, `org_id`, `role`, and `is_active` claims.
   - Added unit tests in [tests/test_auth_verify_token.py](file:///home/pulkit/Downloads/mcp-server/tests/test_auth_verify_token.py).
 
 ---

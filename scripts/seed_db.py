@@ -18,7 +18,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from config import settings
 from db.connection import get_db_connection
-from utils.auth import ALICE_CONTEXT, BOB_CONTEXT, CHARLIE_CONTEXT, DAVE_CONTEXT
+from data.mock_identities import ALICE_CONTEXT, BOB_CONTEXT, CHARLIE_CONTEXT, DAVE_CONTEXT
 
 SCHEMA = settings.SCHEMA or "support"
 ORG_A_ID = ALICE_CONTEXT["org_id"]
@@ -147,6 +147,12 @@ def reset_and_seed():
                 authorized_by TEXT NOT NULL,
                 processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.consumed_approval_tokens (
+                token_hash TEXT PRIMARY KEY,
+                invoice_id TEXT NOT NULL,
+                org_id UUID NOT NULL,
+                consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
             """)
 
             # Add any missing columns to existing tables
@@ -180,6 +186,7 @@ def reset_and_seed():
                 "invoices",
                 "ticket_internal_notes",
                 "ticket_refunds",
+                "consumed_approval_tokens",
             ]
             for tbl in tables_to_truncate:
                 cur.execute(f"TRUNCATE TABLE {SCHEMA}.{tbl} CASCADE;")

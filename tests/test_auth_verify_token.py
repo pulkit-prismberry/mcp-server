@@ -1,12 +1,22 @@
 """Unit tests for MCP-2.1 Step 1: /verify-token client & strict session token verification."""
+import os
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 import httpx
 
+from data.mock_identities import ALICE_CONTEXT, CHARLIE_CONTEXT
+from tools.tickets import (
+    add_internal_note,
+    create_ticket,
+    get_ticket_details,
+    issue_refund,
+    search_tickets,
+    update_ticket_status,
+)
 from utils.auth import (
-    ALICE_CONTEXT,
-    CHARLIE_CONTEXT,
     AuthVerificationError,
+    extract_token_from_mcp_context,
     generate_jwt,
     verify_session_token,
     verify_token_via_backend,
@@ -49,57 +59,151 @@ class TestMCP21VerifyTokenStep1(unittest.TestCase):
             verify_session_token(token, mode="local")
         self.assertIn("disabled", err.exception.message.lower())
 
-    @patch("utils.auth.httpx.post")
-    def test_verify_token_via_backend_success_flat_and_enveloped(self, mock_post):
+    @patch("utils.auth.httpx.get")
+    def test_verify_token_via_backend_success_contract_v3_auth_me(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "data": {
-                "user_id": CHARLIE_CONTEXT["user_id"],
-                "org_id": CHARLIE_CONTEXT["org_id"],
-                "role": "End_Customer",
-                "customer_id": CHARLIE_CONTEXT["customer_id"],
-                "permissions": ["ticket.read:own"],
-            }
+            "id": CHARLIE_CONTEXT["user_id"],
+            "email": CHARLIE_CONTEXT["email"],
+            "full_name": CHARLIE_CONTEXT["full_name"],
+            "org_id": CHARLIE_CONTEXT["org_id"],
+            "customer_id": CHARLIE_CONTEXT["customer_id"],
+            "role": "End_Customer",
+            "permissions": ["ticket.read:own", "ticket.write:own"],
+            "authorized_kb_tiers": ["public"],
         }
-        mock_post.return_value = mock_resp
+        mock_get.return_value = mock_resp
 
-        ctx = verify_token_via_backend("sample_token", verify_url="http://backend.local/verify-token")
+        ctx = verify_token_via_backend("sample_token", verify_url="http://backend.local/auth/me")
         self.assertEqual(ctx["user_id"], CHARLIE_CONTEXT["user_id"])
         self.assertEqual(ctx["org_id"], CHARLIE_CONTEXT["org_id"])
         self.assertEqual(ctx["role"], "End_Customer")
-        mock_post.assert_called_once()
+        self.assertEqual(ctx["customer_id"], CHARLIE_CONTEXT["customer_id"])
+        mock_get.assert_called_once()
 
-    @patch("utils.auth.httpx.post")
-    def test_verify_token_via_backend_401_rejected(self, mock_post):
+    @patch("utils.auth.httpx.get")
+    def test_verify_token_via_backend_401_rejected(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 401
-        mock_resp.json.return_value = {"error": {"message": "Token revoked"}}
-        mock_post.return_value = mock_resp
+        mock_resp.json.return_value = {"error": {"code": "UNAUTHORIZED", "message": "Account is disabled", "details": None}}
+        mock_get.return_value = mock_resp
 
         with self.assertRaises(AuthVerificationError) as err:
-            verify_token_via_backend("revoked_token", verify_url="http://backend.local/verify-token")
+            verify_token_via_backend("revoked_token", verify_url="http://backend.local/auth/me")
         self.assertEqual(err.exception.code, "UNAUTHORIZED")
-        self.assertIn("revoked", err.exception.message)
+        self.assertIn("disabled", err.exception.message.lower())
 
-    @patch("utils.auth.httpx.post")
-    def test_verify_token_via_backend_missing_claims_rejected(self, mock_post):
+    @patch("utils.auth.httpx.get")
+    def test_verify_token_via_backend_missing_claims_rejected(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"user_id": "u1"}  # missing org_id and role
-        mock_post.return_value = mock_resp
+        mock_resp.json.return_value = {"id": "u1"}  # missing org_id and role
+        mock_get.return_value = mock_resp
 
         with self.assertRaises(AuthVerificationError) as err:
-            verify_token_via_backend("incomplete_token", verify_url="http://backend.local/verify-token")
+            verify_token_via_backend("incomplete_token", verify_url="http://backend.local/auth/me")
         self.assertEqual(err.exception.code, "UNAUTHORIZED")
 
-    @patch("utils.auth.httpx.post")
-    def test_verify_token_via_backend_unreachable_raises_503(self, mock_post):
-        mock_post.side_effect = httpx.ConnectError("Connection refused")
+    @patch("utils.auth.httpx.get")
+    def test_verify_token_via_backend_unreachable_raises_503(self, mock_get):
+        mock_get.side_effect = httpx.ConnectError("Connection refused")
 
         with self.assertRaises(AuthVerificationError) as err:
-            verify_token_via_backend("any_token", verify_url="http://backend.local/verify-token")
+            verify_token_via_backend("any_token", verify_url="http://backend.local/auth/me")
         self.assertEqual(err.exception.code, "SERVICE_UNAVAILABLE")
+
+
+class TestMCP21ToolEnforcementStep2(unittest.TestCase):
+    """Tests for Step 2: Every canonical MCP tool requires verified session context."""
+
+    def test_all_6_tools_reject_missing_auth_with_401(self):
+        calls = [
+            get_ticket_details(101),
+            search_tickets(query="renewal"),
+            create_ticket(title="No Auth Ticket", description="Should fail with 401."),
+            update_ticket_status(101, "in_progress"),
+            add_internal_note(101, "No auth note"),
+            issue_refund("inv_org_a_001", "10.00", "No auth refund", "idemp_no_auth"),
+        ]
+        for res in calls:
+            self.assertFalse(res["success"])
+            self.assertEqual(res["error"]["code"], "UNAUTHORIZED")
+
+    def test_invalid_session_token_never_falls_back_to_bob(self):
+        res1 = get_ticket_details(101, session_token="invalid.jwt.token")
+        self.assertFalse(res1["success"])
+        self.assertEqual(res1["error"]["code"], "UNAUTHORIZED")
+
+        res2 = get_ticket_details(101, user_context="Bearer invalid.jwt.token")
+        self.assertFalse(res2["success"])
+        self.assertEqual(res2["error"]["code"], "UNAUTHORIZED")
+
+    def test_incomplete_user_context_dict_rejected_with_401(self):
+        res = get_ticket_details(101, user_context={"user_id": "u1"})  # missing org_id and role
+        self.assertFalse(res["success"])
+        self.assertEqual(res["error"]["code"], "UNAUTHORIZED")
+
+    def test_valid_session_token_local_jwt_succeeds(self):
+        token = generate_jwt(CHARLIE_CONTEXT, lean=True)
+        res = get_ticket_details(101, session_token=f"Bearer {token}")
+        self.assertTrue(res["success"])
+        self.assertEqual(res["data"]["customer_id"], CHARLIE_CONTEXT["customer_id"])
+
+    @patch("utils.auth.verify_token_via_backend")
+    def test_tool_invocation_uses_remote_verify_token_when_configured(self, mock_remote):
+        mock_remote.return_value = {
+            "id": CHARLIE_CONTEXT["user_id"],
+            "user_id": CHARLIE_CONTEXT["user_id"],
+            "customer_id": CHARLIE_CONTEXT["customer_id"],
+            "org_id": CHARLIE_CONTEXT["org_id"],
+            "role": "End_Customer",
+            "permissions": ["ticket.read:own"],
+            "authorized_kb_tiers": ["public"],
+            "is_active": True,
+        }
+        with patch("utils.auth.settings", MagicMock(VERIFY_TOKEN_MODE="remote", AUTH_ME_URL="", AUTH_VERIFY_URL="")):
+            res = get_ticket_details(101, session_token="opaque_agent_session_token")
+        self.assertTrue(res["success"])
+        mock_remote.assert_called_once_with("opaque_agent_session_token")
+
+    def test_remote_mode_rejects_user_context_alias_without_token(self):
+        with patch("utils.auth.settings", MagicMock(VERIFY_TOKEN_MODE="remote", AUTH_ME_URL="", AUTH_VERIFY_URL="")):
+            res = get_ticket_details(101, user_context="alice")
+        self.assertFalse(res["success"])
+        self.assertEqual(res["error"]["code"], "UNAUTHORIZED")
+
+
+class TestMCP21ContextInjectionStep3(unittest.TestCase):
+    """Tests for Step 3: Agent session token injection via FastMCP Context / headers / env."""
+
+    def test_extract_token_from_mcp_meta_dict(self):
+        token = generate_jwt(CHARLIE_CONTEXT, lean=True)
+        mock_ctx = SimpleNamespace(
+            request_context=SimpleNamespace(
+                meta={"authorization": f"Bearer {token}"},
+                request=None,
+            )
+        )
+        extracted = extract_token_from_mcp_context(mock_ctx)
+        self.assertEqual(extracted, f"Bearer {token}")
+
+        res = get_ticket_details(101, ctx=mock_ctx)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["data"]["customer_id"], CHARLIE_CONTEXT["customer_id"])
+
+    def test_extract_token_from_http_headers(self):
+        mock_ctx = SimpleNamespace(
+            request_context=SimpleNamespace(
+                meta=None,
+                request=SimpleNamespace(headers={"Authorization": "Bearer http_header_tok"}),
+            )
+        )
+        self.assertEqual(extract_token_from_mcp_context(mock_ctx), "Bearer http_header_tok")
+
+    def test_extract_token_from_env_var(self):
+        with patch.dict(os.environ, {"MCP_SESSION_TOKEN": "Bearer env_sess_tok"}):
+            self.assertEqual(extract_token_from_mcp_context(None), "Bearer env_sess_tok")
 
 
 if __name__ == "__main__":

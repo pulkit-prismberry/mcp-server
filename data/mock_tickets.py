@@ -1,6 +1,6 @@
 """Deterministic mock data conforming to Contract v2.3 Final."""
 from typing import Any
-from utils.auth import IDENTITIES
+from data.mock_identities import IDENTITIES
 
 ORG_A_ID = IDENTITIES["alice"]["org_id"]
 ORG_B_ID = IDENTITIES["dave"]["org_id"]

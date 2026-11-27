@@ -8,93 +8,7 @@ import httpx
 import jwt
 
 from config import settings
-
-# ---------------------------------------------------------------------------
-# Section 1: Fixed Test Identities & Deterministic UUIDs (Contract v3.0 Locked)
-# ---------------------------------------------------------------------------
-
-IDENTITIES = {
-    "alice": {
-        "user_id": "aaaaaaa1-1111-1111-1111-111111111111",
-        "id": "aaaaaaa1-1111-1111-1111-111111111111",
-        "customer_id": None,
-        "org_id": "11111111-1111-1111-1111-111111111111",
-        "org_name": "Org A",
-        "role": "Org_Admin",
-        "permissions": ["*"],
-        "authorized_kb_tiers": ["public", "internal_staff", "admin_only"],
-        "full_name": "Alice Admin",
-        "email": "alice@orga.com",
-        "is_active": True,
-    },
-    "bob": {
-        "user_id": "bbbbbbb1-1111-1111-1111-111111111111",
-        "id": "bbbbbbb1-1111-1111-1111-111111111111",
-        "customer_id": None,
-        "org_id": "11111111-1111-1111-1111-111111111111",
-        "org_name": "Org A",
-        "role": "Support_Agent",
-        "permissions": [
-            "ticket.read:org",
-            "ticket.write:org",
-            "ticket.status:update",
-            "ticket.note:read",
-            "ticket.note:write",
-            # Legacy aliases for backward compatibility
-            "tickets:read",
-            "tickets:update",
-            "notes:create",
-        ],
-        "authorized_kb_tiers": ["public", "internal_staff"],
-        "full_name": "Bob Agent",
-        "email": "bob@orga.com",
-        "is_active": True,
-    },
-    "charlie": {
-        "user_id": "ccccccc1-1111-1111-1111-111111111111",
-        "id": "ccccccc1-1111-1111-1111-111111111111",
-        "customer_id": "ccccccc2-2222-2222-2222-222222222222",
-        "org_id": "11111111-1111-1111-1111-111111111111",
-        "org_name": "Org A",
-        "role": "End_Customer",
-        "permissions": [
-            "ticket.read:own",
-            "ticket.write:own",
-            # Legacy aliases for backward compatibility
-            "tickets:read_own",
-            "tickets:create",
-            "tickets:close_own",
-        ],
-        "authorized_kb_tiers": ["public"],
-        "full_name": "Charlie Customer",
-        "email": "charlie@customer.com",
-        "is_active": True,
-    },
-    "dave": {
-        "user_id": "ddddddd2-2222-2222-2222-222222222222",
-        "id": "ddddddd2-2222-2222-2222-222222222222",
-        "customer_id": None,
-        "org_id": "22222222-2222-2222-2222-222222222222",
-        "org_name": "Org B",
-        "role": "Org_Admin",
-        "permissions": ["*"],
-        "authorized_kb_tiers": ["public", "internal_staff", "admin_only"],
-        "full_name": "Dave Admin",
-        "email": "dave@orgb.com",
-        "is_active": True,
-    },
-}
-
-ALICE_CONTEXT = IDENTITIES["alice"]
-BOB_CONTEXT = IDENTITIES["bob"]
-CHARLIE_CONTEXT = IDENTITIES["charlie"]
-DAVE_CONTEXT = IDENTITIES["dave"]
-
-# Authoritative reverse lookup mapping UUID -> Identity Profile
-IDENTITIES_BY_USER_ID: dict[str, dict[str, Any]] = {
-    identity["user_id"]: identity
-    for identity in IDENTITIES.values()
-}
+from data.mock_identities import BOB_CONTEXT, IDENTITIES, IDENTITIES_BY_USER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -132,11 +46,7 @@ def has_permission(user_context: Optional[dict[str, Any]], required_permission: 
     if required_permission in perms:
         return True
 
-    # Legacy permission mapping / role-based fallback for backward compatibility
-    role = user_context.get("role")
-    if role == "Org_Admin":
-        return True
-
+    # Legacy permission alias mapping (still permission-based, never role-name-based)
     legacy_map = {
         "tickets:read": ["ticket.read:org", "ticket.read:own"],
         "tickets:update": ["ticket.status:update"],
@@ -148,21 +58,6 @@ def has_permission(user_context: Optional[dict[str, Any]], required_permission: 
     for perm in perms:
         if required_permission in legacy_map.get(perm, []):
             return True
-
-    if role == "Support_Agent" and required_permission in (
-        "ticket.read:org",
-        "ticket.write:org",
-        "ticket.status:update",
-        "ticket.note:read",
-        "ticket.note:write",
-    ):
-        return True
-
-    if role == "End_Customer" and required_permission in (
-        "ticket.read:own",
-        "ticket.write:own",
-    ):
-        return True
 
     return False
 
@@ -192,11 +87,11 @@ def update_live_user_role(
             IDENTITIES_BY_USER_ID[uid]["permissions"] = new_permissions
 
 
-# JWT Configuration (Contract Section 2.A & 2.B)
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key-support-ai-2026-super-secure-key-32bytes")
-JWT_ALGORITHM = "HS256"
-JWT_ISSUER = "support-ai-backend"
-JWT_AUDIENCE = "support-ai-services"
+# JWT Configuration (loaded from config.settings / .env)
+JWT_SECRET_KEY = settings.JWT_SECRET_KEY
+JWT_ALGORITHM = settings.JWT_ALGORITHM
+JWT_ISSUER = settings.JWT_ISSUER
+JWT_AUDIENCE = settings.JWT_AUDIENCE
 
 # In-memory single-use approval token tracking (Contract Section 6.6)
 CONSUMED_APPROVAL_TOKENS: set[str] = set()
@@ -291,7 +186,17 @@ def resolve_auth_me(user_context_or_id: Any) -> tuple[int, dict[str, Any]]:
     Returns tuple (status_code, response_dict).
     If user is disabled (is_active=False), returns 401 UNAUTHORIZED.
     """
-    ctx = normalize_user_context(user_context_or_id)
+    try:
+        ctx = normalize_user_context(user_context_or_id)
+    except AuthVerificationError as exc:
+        return 401, {
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+                "details": None,
+            }
+        }
+
     if not ctx.get("is_active", True):
         return 401, {
             "error": {
@@ -332,7 +237,7 @@ def _validate_verified_context(ctx: dict[str, Any]) -> dict[str, Any]:
         raise AuthVerificationError("Verified auth payload must be a JSON object.")
 
     if ctx.get("is_active") is False:
-        raise AuthVerificationError("Account is disabled.")
+        raise AuthVerificationError("Account is disabled")
 
     user_id = ctx.get("user_id") or ctx.get("sub") or ctx.get("id")
     org_id = ctx.get("org_id")
@@ -359,19 +264,19 @@ def verify_token_via_backend(
     verify_url: Optional[str] = None,
     timeout: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Verify a session bearer token against the backend `/verify-token` endpoint."""
+    """Resolve and verify caller context via backend `GET /auth/me` (Contract v3.0 Section 2.C)."""
     url = (
         verify_url
+        or settings.AUTH_ME_URL
         or settings.AUTH_VERIFY_URL
-        or f"{settings.BACKEND_URL.rstrip('/')}/verify-token"
+        or f"{settings.BACKEND_URL.rstrip('/')}/auth/me"
     )
     req_timeout = timeout if timeout is not None else settings.VERIFY_TOKEN_TIMEOUT
 
     try:
-        response = httpx.post(
+        response = httpx.get(
             url,
             headers={"Authorization": f"Bearer {token}"},
-            json={"token": token},
             timeout=req_timeout,
         )
     except httpx.HTTPError as exc:
@@ -394,16 +299,16 @@ def verify_token_via_backend(
 
     if response.status_code != 200:
         raise AuthVerificationError(
-            f"Token verification failed with status {response.status_code}.",
+            f"GET /auth/me failed with status {response.status_code}.",
             code="UNAUTHORIZED",
         )
 
     try:
         data = response.json()
     except Exception as exc:
-        raise AuthVerificationError("Malformed JSON from /verify-token.") from exc
+        raise AuthVerificationError("Malformed JSON from GET /auth/me.") from exc
 
-    # Support either flat payload or {"data": {...}} / {"user": {...}} envelope
+    # Support either flat Contract v3.0 /auth/me payload or {"data": {...}} / {"user": {...}} envelope
     if isinstance(data, dict):
         if isinstance(data.get("data"), dict):
             data = data["data"]
@@ -420,9 +325,9 @@ def verify_session_token(
     """Verify a session token and return a validated user context (user_id, org_id, role).
 
     Modes:
-    - 'remote': Strictly calls backend /verify-token.
+    - 'remote': Strictly calls backend GET /auth/me with Authorization: Bearer <token>.
     - 'local': Strictly verifies HS256 Lean JWT locally and resolves live user context.
-    - 'auto': Calls /verify-token if AUTH_VERIFY_URL is configured; otherwise local HS256.
+    - 'auto': Calls GET /auth/me if AUTH_ME_URL / AUTH_VERIFY_URL is configured; otherwise local HS256.
     """
     if not token or not isinstance(token, str) or not token.strip():
         raise AuthVerificationError("Missing session token.")
@@ -436,7 +341,7 @@ def verify_session_token(
 
     resolved_mode = (mode or settings.VERIFY_TOKEN_MODE or "auto").lower()
     if resolved_mode == "auto":
-        resolved_mode = "remote" if settings.AUTH_VERIFY_URL else "local"
+        resolved_mode = "remote" if (settings.AUTH_ME_URL or settings.AUTH_VERIFY_URL) else "local"
 
     if resolved_mode == "remote":
         return verify_token_via_backend(raw_token)
@@ -459,13 +364,15 @@ def generate_approval_token(
     invoice_id: str,
     amount: float,
     org_id: str,
-    approver_id: str = "aaaaaaa1-1111-1111-1111-111111111111",
+    approver_id: str,
     ttl_seconds: int = 900,
 ) -> str:
     """Mint an admin approval token binding invoice, amount, org, and approver (15-min TTL) (Section 6.6).
     
     Generates a dual-compatible token (JWT signed with HS256).
     """
+    if not approver_id or not str(approver_id).strip():
+        raise ValueError("approver_id is required to mint an approval token.")
     now = int(time.time())
     payload = {
         "invoice_id": str(invoice_id),
@@ -484,10 +391,12 @@ def generate_approval_hmac(
     invoice_id: str,
     amount: float,
     org_id: str,
-    approver_id: str = "aaaaaaa1-1111-1111-1111-111111111111",
+    approver_id: str,
     ttl_seconds: int = 900,
 ) -> str:
     """Mint signed single-use HMAC token: token = f"{payload}:{HMAC_SHA256(...)}" (Section 6.6)."""
+    if not approver_id or not str(approver_id).strip():
+        raise ValueError("approver_id is required to mint an approval HMAC.")
     expires_at = int(time.time()) + ttl_seconds
     formatted_amount = f"{round(float(amount), 2):.2f}"
     payload_str = f"{invoice_id}:{formatted_amount}:{org_id}:{approver_id}:{expires_at}"
@@ -497,6 +406,29 @@ def generate_approval_hmac(
         hashlib.sha256,
     ).hexdigest()
     return f"{payload_str}:{sig}"
+
+
+def _token_sha256(token_str: str) -> str:
+    return hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+
+
+def _is_approval_token_consumed(token_str: str) -> bool:
+    if token_str in CONSUMED_APPROVAL_TOKENS:
+        return True
+    try:
+        from db.ticket_repository import TicketRepository
+        return TicketRepository.is_approval_token_consumed(_token_sha256(token_str))
+    except Exception:
+        return False
+
+
+def _mark_approval_token_consumed(token_str: str, invoice_id: str, org_id: str) -> None:
+    CONSUMED_APPROVAL_TOKENS.add(token_str)
+    try:
+        from db.ticket_repository import TicketRepository
+        TicketRepository.mark_approval_token_consumed(_token_sha256(token_str), invoice_id, org_id)
+    except Exception:
+        pass
 
 
 def verify_and_consume_approval_token(
@@ -510,7 +442,7 @@ def verify_and_consume_approval_token(
         return False, "Approval token is required."
 
     token_str = str(token).strip()
-    if token_str in CONSUMED_APPROVAL_TOKENS:
+    if _is_approval_token_consumed(token_str):
         return False, "Approval token has already been consumed."
 
     # Path A: Raw HMAC format: f"{invoice_id}:{amount}:{org_id}:{approver_id}:{expires_at}:{sig}"
@@ -548,7 +480,7 @@ def verify_and_consume_approval_token(
             if str(o_id) != str(expected_org_id):
                 return False, "Approval token organization mismatch."
 
-            CONSUMED_APPROVAL_TOKENS.add(token_str)
+            _mark_approval_token_consumed(token_str, expected_invoice_id, expected_org_id)
             return True, None
 
     # Path B: JWT format (aud="refund-approval")
@@ -574,35 +506,42 @@ def verify_and_consume_approval_token(
     if str(payload.get("org_id")) != str(expected_org_id):
         return False, "Approval token organization mismatch."
 
-    CONSUMED_APPROVAL_TOKENS.add(token_str)
+    _mark_approval_token_consumed(token_str, expected_invoice_id, expected_org_id)
     return True, None
 
 
 def normalize_user_context(context: Optional[Any] = None) -> dict[str, Any]:
-    """Normalize user context; defaults to Bob (Support Agent, Org A) if not provided."""
+    """Normalize user context; defaults to Bob (Support Agent, Org A) only when REQUIRE_AUTH_CONTEXT is False."""
     if not context:
+        if settings.REQUIRE_AUTH_CONTEXT:
+            raise AuthVerificationError(
+                "Authenticated user session context (user_id, org_id, role) is required.",
+                code="UNAUTHORIZED",
+            )
         return dict(BOB_CONTEXT)
 
     if isinstance(context, str):
-        key = context.lower().strip()
-        if key.startswith("bearer "):
-            token = key[7:].strip()
-            try:
-                return verify_jwt(token)
-            except Exception:
-                pass
-        if key in IDENTITIES:
-            return dict(IDENTITIES[key])
-        # Check by UUID directly
-        if key in IDENTITIES_BY_USER_ID:
-            return dict(IDENTITIES_BY_USER_ID[key])
+        raw = context.strip()
+        lower = raw.lower()
+        if lower.startswith("bearer ") or raw.count(".") == 2:
+            return verify_session_token(raw)
+        if lower in IDENTITIES:
+            return _validate_verified_context(dict(IDENTITIES[lower]))
+        if raw in IDENTITIES_BY_USER_ID:
+            return _validate_verified_context(dict(IDENTITIES_BY_USER_ID[raw]))
+        raise AuthVerificationError("Unrecognized user context or session token.")
 
     if isinstance(context, dict):
+        # If a session token is embedded inside the dict, verify it strictly
+        embedded_token = context.get("session_token") or context.get("access_token") or context.get("token")
+        if isinstance(embedded_token, str) and embedded_token.strip():
+            return verify_session_token(embedded_token)
+
         # Check alias shortcuts
         for k in ("alias", "user", "name", "identity", "persona"):
             val = context.get(k)
             if isinstance(val, str) and val.lower().strip() in IDENTITIES:
-                return dict(IDENTITIES[val.lower().strip()])
+                return _validate_verified_context(dict(IDENTITIES[val.lower().strip()]))
 
         # If user_id UUID is known in authoritative store, enrich with authoritative identity
         uid = context.get("user_id") or context.get("sub") or context.get("id")
@@ -612,34 +551,70 @@ def normalize_user_context(context: Optional[Any] = None) -> dict[str, Any]:
             for override_key in ("customer_id", "email", "full_name", "is_active", "role", "permissions"):
                 if override_key in context and context[override_key] is not None:
                     base[override_key] = context[override_key]
-            return base
+            return _validate_verified_context(base)
 
-    uid = str(context.get("user_id", context.get("id", BOB_CONTEXT["user_id"])))
-    role = str(context.get("role", BOB_CONTEXT["role"]))
-    perms = context.get("permissions")
-    if perms is None:
-        if role == "Org_Admin":
-            perms = ["*"]
-        elif role == "Support_Agent":
-            perms = [
-                "ticket.read:org",
-                "ticket.write:org",
-                "ticket.status:update",
-                "ticket.note:read",
-                "ticket.note:write",
-            ]
-        else:
-            perms = ["ticket.read:own", "ticket.write:own"]
+        return _validate_verified_context(context)
 
-    return {
-        "id": uid,
-        "user_id": uid,
-        "customer_id": context.get("customer_id"),
-        "org_id": str(context.get("org_id", BOB_CONTEXT["org_id"])),
-        "role": role,
-        "email": str(context.get("email", BOB_CONTEXT["email"])),
-        "full_name": str(context.get("full_name", BOB_CONTEXT["full_name"])),
-        "permissions": perms,
-        "authorized_kb_tiers": context.get("authorized_kb_tiers", ["public"]),
-        "is_active": context.get("is_active", True),
-    }
+    raise AuthVerificationError("Invalid user context format.")
+
+
+def resolve_verified_user_context(
+    user_context: Optional[Any] = None,
+    session_token: Optional[str] = None,
+) -> dict[str, Any]:
+    """Resolve and strictly verify caller context from session_token or user_context (MCP-2.1)."""
+    if session_token is not None and str(session_token).strip():
+        return verify_session_token(str(session_token))
+
+    mode = (settings.VERIFY_TOKEN_MODE or "auto").lower()
+    is_remote = mode == "remote" or (mode == "auto" and bool(settings.AUTH_ME_URL or settings.AUTH_VERIFY_URL))
+    if is_remote:
+        raise AuthVerificationError(
+            "A verified Bearer session token (via MCP _meta or Authorization header) is required.",
+            code="UNAUTHORIZED",
+        )
+
+    return normalize_user_context(user_context)
+
+
+def extract_token_from_mcp_context(ctx: Optional[Any]) -> Optional[str]:
+    """Extract an agent-injected Bearer / session token from FastMCP Context or env (MCP-2.1 Step 3).
+
+    Checks in priority order:
+    1. MCP request `_meta` (`authorization`, `Authorization`, `session_token`, `access_token`, `token`).
+    2. HTTP request headers when running over StreamableHTTP / SSE (`Authorization`, `x-session-token`).
+    3. `MCP_SESSION_TOKEN` environment variable for per-session stdio subprocesses.
+    """
+    token_keys = ("authorization", "Authorization", "session_token", "access_token", "token")
+
+    if ctx is not None:
+        try:
+            req_ctx = ctx.request_context
+        except Exception:
+            req_ctx = None
+
+        if req_ctx is not None:
+            meta = getattr(req_ctx, "meta", None)
+            if meta is not None:
+                for key in token_keys:
+                    val = meta.get(key) if isinstance(meta, dict) else getattr(meta, key, None)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+                # Check Pydantic model_extra if meta is a BaseModel with extra="allow"
+                extra = getattr(meta, "model_extra", None)
+                if isinstance(extra, dict):
+                    for key in token_keys:
+                        val = extra.get(key)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+
+            http_req = getattr(req_ctx, "request", None)
+            headers = getattr(http_req, "headers", None) if http_req is not None else None
+            if headers is not None:
+                for hdr in ("authorization", "Authorization", "x-session-token"):
+                    val = headers.get(hdr)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+
+    env_token = os.getenv("MCP_SESSION_TOKEN", "").strip()
+    return env_token or None
