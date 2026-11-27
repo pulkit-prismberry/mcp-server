@@ -18,6 +18,7 @@ from db.connection import is_db_connected
 from db.ticket_repository import TicketRepository
 from utils.auth import (
     AuthVerificationError,
+    extract_approval_signature,
     has_permission,
     resolve_verified_user_context,
     verify_and_consume_approval_token,
@@ -99,7 +100,7 @@ class TicketService:
         ticket = None
         # Primary: PostgreSQL Database
         try:
-            ticket = TicketRepository.get_by_id(ticket_id)
+            ticket = TicketRepository.get_by_id(ticket_id, org_id=ctx["org_id"])
         except Exception as exc:
             logger.warning(f"Database query error in get_ticket: {exc}")
             if not settings.USE_MOCK_FALLBACK:
@@ -267,12 +268,8 @@ class TicketService:
             else:
                 assigned_customer_id = ctx["user_id"]
 
-        try:
-            new_ticket_id = TicketRepository.get_max_ticket_id() + 1
-        except Exception:
-            new_ticket_id = max(MOCK_TICKETS.keys(), default=100) + 1
-
         new_uuid = str(uuid.uuid4())
+        new_ticket_id = max(MOCK_TICKETS.keys(), default=100) + 1 if settings.USE_MOCK_FALLBACK else new_uuid
         now = _now_iso()
 
         new_ticket = {
@@ -286,6 +283,8 @@ class TicketService:
             "category": norm_category,
             "priority": norm_priority,
             "status": "open",
+            "channel": "web",
+            "product_name": None,
             "invoice_id": None,
             "resolution": None,
             "created_at": now,
@@ -354,7 +353,12 @@ class TicketService:
 
         # Update in PostgreSQL
         try:
-            TicketRepository.update_ticket_status(ticket["ticket_id"], new_status, reason)
+            TicketRepository.update_ticket_status(
+                ticket.get("id") or ticket["ticket_id"],
+                new_status,
+                reason,
+                org_id=ctx["org_id"],
+            )
         except Exception as exc:
             logger.warning(f"Could not update ticket in PostgreSQL: {exc}")
             if not settings.USE_MOCK_FALLBACK:
@@ -449,7 +453,10 @@ class TicketService:
 
         # 1. Idempotency Check FIRST (Section 6.6 Rule 1)
         try:
-            cached_refund = TicketRepository.get_refund_by_idempotency_key(idempotency_key)
+            cached_refund = TicketRepository.get_refund_by_idempotency_key(
+                idempotency_key,
+                org_id=ctx["org_id"],
+            )
             if cached_refund:
                 return success_response(cached_refund)
         except Exception:
@@ -474,7 +481,7 @@ class TicketService:
         inv_id_str = str(invoice_id).strip()
         invoice = None
         try:
-            invoice = TicketRepository.get_invoice(inv_id_str)
+            invoice = TicketRepository.get_invoice(inv_id_str, org_id=ctx["org_id"])
         except Exception:
             pass
 
@@ -485,6 +492,7 @@ class TicketService:
             return error_response("NOT_FOUND", f"Invoice '{invoice_id}' not found.")
 
         # 3. Token check for amount > 100.00 (Section 6.6 Rule 3)
+        approval_signature = None
         if num_amount > 100.00:
             if not approval_token or not approval_token.strip():
                 return error_response("FORBIDDEN", "Refunds exceeding $100.00 require a valid approval_token.")
@@ -497,9 +505,10 @@ class TicketService:
             )
             if not valid:
                 return error_response("FORBIDDEN", err or "Invalid approval_token.")
+            approval_signature = extract_approval_signature(approval_token)
 
         # 4. Amount cannot exceed remaining unrefunded balance (Section 6.6 Rule 4)
-        total_amt = float(invoice.get("total_amount", 0.0))
+        total_amt = float(invoice.get("amount") if invoice.get("amount") is not None else invoice.get("total_amount", 0.0))
         refunded_amt = float(invoice.get("refunded_amount", 0.0))
         remaining = round(total_amt - refunded_amt, 2)
         if num_amount > remaining:
@@ -510,6 +519,7 @@ class TicketService:
 
         # 5. Atomic execution & audit log (Section 6.6 Rule 5)
         new_refunded_total = round(refunded_amt + num_amount, 2)
+        new_remaining = round(total_amt - new_refunded_total, 2)
         new_status = "refunded" if new_refunded_total >= total_amt else "partially_refunded"
 
         refund_record = {
@@ -519,6 +529,8 @@ class TicketService:
             "amount": num_amount,
             "reason": reason.strip(),
             "idempotency_key": idempotency_key,
+            "approval_signature": approval_signature,
+            "remaining_balance": new_remaining,
             "authorized_by": ctx["user_id"],
             "processed_at": _now_iso(),
         }
@@ -574,7 +586,7 @@ class TicketService:
         try:
             with get_db_connection() as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute(f"SELECT * FROM {settings.SCHEMA or 'support'}.tickets ORDER BY ticket_id ASC;")
+                    cur.execute(f"SELECT * FROM {settings.SCHEMA or 'public'}.tickets ORDER BY created_at DESC;")
                     return [dict(r) for r in cur.fetchall()]
         except Exception:
             return list(MOCK_TICKETS.values())

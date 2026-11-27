@@ -71,7 +71,14 @@ def get_identity_by_uuid(user_id: str) -> Optional[dict[str, Any]]:
 
 def get_live_user_context(user_id: str) -> Optional[dict[str, Any]]:
     """Dynamically resolve live user context (org_id, role, permissions, customer_id, email) from live store (Section 2.B & 2.D)."""
-    return get_identity_by_uuid(user_id)
+    ctx = get_identity_by_uuid(user_id)
+    if ctx is not None:
+        return ctx
+    try:
+        from db.ticket_repository import TicketRepository
+        return TicketRepository.get_user_context_by_id(str(user_id).strip())
+    except Exception:
+        return None
 
 
 def update_live_user_role(
@@ -264,12 +271,12 @@ def verify_token_via_backend(
     verify_url: Optional[str] = None,
     timeout: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Resolve and verify caller context via backend `GET /auth/me` (Contract v3.0 Section 2.C)."""
+    """Resolve and verify caller context via backend `GET /api/v1/auth/me` (Contract v3.0 Section 2.C)."""
     url = (
         verify_url
         or settings.AUTH_ME_URL
         or settings.AUTH_VERIFY_URL
-        or f"{settings.BACKEND_URL.rstrip('/')}/auth/me"
+        or f"{settings.BACKEND_URL.rstrip('/')}/api/v1/auth/me"
     )
     req_timeout = timeout if timeout is not None else settings.VERIFY_TOKEN_TIMEOUT
 
@@ -412,23 +419,38 @@ def _token_sha256(token_str: str) -> str:
     return hashlib.sha256(token_str.encode("utf-8")).hexdigest()
 
 
-def _is_approval_token_consumed(token_str: str) -> bool:
+def _is_approval_token_consumed(token_str: str, sig_or_hash: Optional[str] = None, org_id: Optional[str] = None) -> bool:
     if token_str in CONSUMED_APPROVAL_TOKENS:
+        return True
+    key = sig_or_hash or _token_sha256(token_str)
+    if key in CONSUMED_APPROVAL_TOKENS:
         return True
     try:
         from db.ticket_repository import TicketRepository
-        return TicketRepository.is_approval_token_consumed(_token_sha256(token_str))
+        return TicketRepository.is_approval_token_consumed(key, org_id=org_id)
     except Exception:
         return False
 
 
-def _mark_approval_token_consumed(token_str: str, invoice_id: str, org_id: str) -> None:
+def _mark_approval_token_consumed(token_str: str, sig_or_hash: Optional[str] = None) -> None:
     CONSUMED_APPROVAL_TOKENS.add(token_str)
-    try:
-        from db.ticket_repository import TicketRepository
-        TicketRepository.mark_approval_token_consumed(_token_sha256(token_str), invoice_id, org_id)
-    except Exception:
-        pass
+    if sig_or_hash:
+        CONSUMED_APPROVAL_TOKENS.add(sig_or_hash)
+
+
+def extract_approval_signature(token: Optional[str]) -> Optional[str]:
+    """Extract the signature or SHA-256 hash stored in `audit_logs.details['approval_signature']`."""
+    if not token or not str(token).strip():
+        return None
+    token_str = str(token).strip()
+    if not token_str.startswith("ey"):
+        dot_parts = token_str.split(".")
+        if len(dot_parts) == 3:
+            return dot_parts[2]
+        colon_parts = token_str.split(":")
+        if len(colon_parts) == 6:
+            return colon_parts[5]
+    return _token_sha256(token_str)
 
 
 def verify_and_consume_approval_token(
@@ -437,15 +459,54 @@ def verify_and_consume_approval_token(
     expected_amount: float,
     expected_org_id: str,
 ) -> tuple[bool, Optional[str]]:
-    """Verify approval token signature, payload bindings, TTL, and enforce single-use (Section 6.6)."""
+    """Verify approval token signature, payload bindings, TTL, and enforce single-use (Section 6.6).
+
+    Supports:
+    - Path A: support_ai-backend 3-part dot format `{expires_at}.{approver_id}.{signature}`
+    - Path B: Legacy 6-part colon HMAC format `{invoice_id}:{amount}:{org_id}:{approver_id}:{expires_at}:{sig}`
+    - Path C: HS256 JWT format (`aud="refund-approval"`)
+    """
     if not token or not str(token).strip():
         return False, "Approval token is required."
 
     token_str = str(token).strip()
-    if _is_approval_token_consumed(token_str):
+    sig_key = extract_approval_signature(token_str)
+    if _is_approval_token_consumed(token_str, sig_or_hash=sig_key, org_id=expected_org_id):
         return False, "Approval token has already been consumed."
 
-    # Path A: Raw HMAC format: f"{invoice_id}:{amount}:{org_id}:{approver_id}:{expires_at}:{sig}"
+    # Path A: support_ai-backend 3-part dot format: f"{expires_at}.{approver_id}.{signature}"
+    if "." in token_str and not token_str.startswith("ey"):
+        dot_parts = token_str.split(".")
+        if len(dot_parts) == 3:
+            exp_str, approver_id, provided_sig = dot_parts
+            now = int(time.time())
+            try:
+                expires_at = int(exp_str)
+                if now > expires_at:
+                    return False, "Approval token has expired (15-minute TTL exceeded)."
+            except ValueError:
+                return False, "Invalid expiry in approval token."
+
+            amt_candidates = {f"{round(float(expected_amount), 2):.2f}", str(expected_amount)}
+            matched = False
+            for amt_str in amt_candidates:
+                payload_str = f"{expected_invoice_id}:{amt_str}:{expected_org_id}:{approver_id}:{expires_at}"
+                expected_sig = hmac.new(
+                    JWT_SECRET_KEY.encode("utf-8"),
+                    payload_str.encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest()
+                if hmac.compare_digest(expected_sig, provided_sig):
+                    matched = True
+                    break
+
+            if not matched:
+                return False, "Invalid approval token signature or payload mismatch."
+
+            _mark_approval_token_consumed(token_str, sig_or_hash=provided_sig)
+            return True, None
+
+    # Path B: Raw HMAC format: f"{invoice_id}:{amount}:{org_id}:{approver_id}:{expires_at}:{sig}"
     if ":" in token_str and not token_str.startswith("ey"):
         parts = token_str.split(":")
         if len(parts) == 6:
@@ -480,10 +541,10 @@ def verify_and_consume_approval_token(
             if str(o_id) != str(expected_org_id):
                 return False, "Approval token organization mismatch."
 
-            _mark_approval_token_consumed(token_str, expected_invoice_id, expected_org_id)
+            _mark_approval_token_consumed(token_str, sig_or_hash=provided_sig)
             return True, None
 
-    # Path B: JWT format (aud="refund-approval")
+    # Path C: JWT format (aud="refund-approval")
     try:
         payload = jwt.decode(
             token_str,
@@ -506,7 +567,7 @@ def verify_and_consume_approval_token(
     if str(payload.get("org_id")) != str(expected_org_id):
         return False, "Approval token organization mismatch."
 
-    _mark_approval_token_consumed(token_str, expected_invoice_id, expected_org_id)
+    _mark_approval_token_consumed(token_str, sig_or_hash=sig_key)
     return True, None
 
 

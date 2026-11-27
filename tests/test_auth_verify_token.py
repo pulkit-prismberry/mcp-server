@@ -205,6 +205,36 @@ class TestMCP21ContextInjectionStep3(unittest.TestCase):
         with patch.dict(os.environ, {"MCP_SESSION_TOKEN": "Bearer env_sess_tok"}):
             self.assertEqual(extract_token_from_mcp_context(None), "Bearer env_sess_tok")
 
+    def test_backend_3part_approval_token_verification_and_replay(self):
+        import hashlib
+        import hmac
+        import time
+        from config import settings
+        from utils.auth import verify_and_consume_approval_token
+
+        invoice_id = "769a2504-7c6c-5950-88f9-6382cfeafd12"
+        amount = "250.00"
+        org_id = ALICE_CONTEXT["org_id"]
+        approver_id = ALICE_CONTEXT["user_id"]
+        expires_at = int(time.time()) + 900
+
+        sign_payload = f"{invoice_id}:{amount}:{org_id}:{approver_id}:{expires_at}"
+        sig = hmac.new(
+            settings.JWT_SECRET_KEY.encode("utf-8"),
+            sign_payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        token = f"{expires_at}.{approver_id}.{sig}"
+
+        ok, err = verify_and_consume_approval_token(token, invoice_id, 250.00, org_id)
+        self.assertTrue(ok, err)
+        self.assertIsNone(err)
+
+        # Replay must be rejected
+        ok2, err2 = verify_and_consume_approval_token(token, invoice_id, 250.00, org_id)
+        self.assertFalse(ok2)
+        self.assertIn("consumed", (err2 or "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,37 @@
+# Runs mcp-server connected to the support_ai-backend Docker stack.
+# Start support_ai-backend first: `cd ../support_ai-backend && docker compose up -d`
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: support_ai_mcp_server
+    stdin_open: true
+    tty: false
+    restart: unless-stopped
+    environment:
+      - MCP_SERVER_NAME=Multi-Tenant Support AI
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/support_ai_db
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGDATABASE=support_ai_db
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - PGSCHEMA=public
+      - PGSSLMODE=prefer
+      - BACKEND_URL=http://backend:8000
+      - VERIFY_TOKEN_MODE=remote
+      - REQUIRE_AUTH_CONTEXT=true
+      - USE_MOCK_FALLBACK=false
+      - JWT_SECRET_KEY=dev-secret-key-change-in-production-min-32-chars
+      - JWT_ALGORITHM=HS256
+      - JWT_ISSUER=support-ai-backend
+      - JWT_AUDIENCE=support-ai-services
+    networks:
+      - support_ai_network
+
+networks:
+  support_ai_network:
+    name: support_ai-backend_default
+    external: true

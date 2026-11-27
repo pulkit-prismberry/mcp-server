@@ -1,6 +1,6 @@
-"""PostgreSQL database connection management."""
+"""PostgreSQL database connection management with RLS tenant context support."""
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 import psycopg2
 from psycopg2.extensions import connection as PgConnection
 
@@ -10,7 +10,8 @@ from config import settings
 def get_connection_params() -> dict[str, str]:
     """Retrieve connection dictionary for psycopg2."""
     if settings.DATABASE_URL:
-        return {"dsn": settings.DATABASE_URL}
+        dsn = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        return {"dsn": dsn}
 
     params = {
         "host": settings.PGHOST,
@@ -33,6 +34,12 @@ def get_db_connection() -> Generator[PgConnection, None, None]:
         yield conn
     finally:
         conn.close()
+
+
+def set_db_tenant_context(cur, org_id: Optional[str]) -> None:
+    """Set transaction-local PostgreSQL RLS tenant context (app.current_org_id)."""
+    if org_id:
+        cur.execute("SELECT set_config('app.current_org_id', %s, true);", (str(org_id),))
 
 
 def is_db_connected() -> bool:

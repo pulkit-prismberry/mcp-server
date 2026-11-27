@@ -18,15 +18,15 @@ class Settings:
     SERVER_NAME: str = os.getenv("MCP_SERVER_NAME", "Multi-Tenant Support AI")
     DATA_DIR: Path = BASE_DIR / "data"
 
-    # PostgreSQL Database Settings
+    # PostgreSQL Database Settings (aligned with support_ai-backend)
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     PGHOST: str = os.getenv("PGHOST", "localhost")
-    PGPORT: str = os.getenv("PGPORT", "5432")
-    PGDATABASE: str = os.getenv("PGDATABASE", "support_db")
+    PGPORT: str = os.getenv("PGPORT", "5433")
+    PGDATABASE: str = os.getenv("PGDATABASE", "support_ai_db")
     PGUSER: str = os.getenv("PGUSER", "postgres")
-    PGPASSWORD: str = os.getenv("PGPASSWORD", "")
+    PGPASSWORD: str = os.getenv("PGPASSWORD", "postgres")
     PGSSLMODE: str = os.getenv("PGSSLMODE", "prefer")
-    SCHEMA: str = os.getenv("PGSCHEMA", "support")
+    SCHEMA: str = os.getenv("PGSCHEMA", "public")
 
     # Fallback to mock data if PostgreSQL is unreachable (useful for dev & tests)
     USE_MOCK_FALLBACK: bool = os.getenv("USE_MOCK_FALLBACK", "true").lower() in ("true", "1", "yes")
@@ -39,9 +39,9 @@ class Settings:
     VERIFY_TOKEN_TIMEOUT: float = float(os.getenv("VERIFY_TOKEN_TIMEOUT", "5.0"))
     REQUIRE_AUTH_CONTEXT: bool = os.getenv("REQUIRE_AUTH_CONTEXT", "true").lower() in ("true", "1", "yes")
 
-    # JWT Settings (Contract v3.0 Section 2.A & 2.B)
-    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "dev-secret-key-support-ai-2026-super-secure-key-32bytes")
-    JWT_ALGORITHM: str = "HS256"
+    # JWT Settings (aligned with support_ai-backend)
+    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production-min-32-chars")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_ISSUER: str = os.getenv("JWT_ISSUER", "support-ai-backend")
     JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "support-ai-services")
 
